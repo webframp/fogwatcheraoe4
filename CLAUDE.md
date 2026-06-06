@@ -1,5 +1,14 @@
 # FogWatcher — Agent Guidance
 
+## Design Documents
+
+Read `design/` before making architectural changes:
+- `design/high-level.md` — architecture overview and data flow
+- `design/domain.md` — ubiquitous language, bounded context, entities
+- `design/decisions.md` — ADRs with rationale for each choice
+- `design/persona.md` — FogWatcher character design and prompt structure
+- `design/platform.md` — Devvit constraints that affect implementation
+
 ## What This Is
 
 A Devvit mod bot for r/aoe4. It analyzes comments and posts via Gemini, replies in-character as FogWatcher when content warrants moderation. Simple architecture, single purpose.

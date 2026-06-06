@@ -8,6 +8,7 @@
     "build": "node --experimental-strip-types ./tools/build.ts --minify",
     "deploy": "npm run build && devvit upload",
     "dev": "devvit playtest",
+    "test": "node --experimental-strip-types --test src/server/__tests__/*.test.ts",
     "login": "devvit login",
     "launch": "npm run build && npm run deploy && devvit publish",
     "type-check": "tsc --build"

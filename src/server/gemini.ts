@@ -10,6 +10,33 @@ export type AnalysisResult = {
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
+/** Parse the raw Gemini API response into an AnalysisResult. Exported for testing. */
+export function parseGeminiResponse(data: unknown): AnalysisResult {
+  const candidates = (data as any)?.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    throw new Error("No candidates in Gemini response");
+  }
+
+  const text: string | undefined = candidates[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("No text in Gemini response");
+
+  const parsed = JSON.parse(text);
+
+  if (parsed.action !== "reply" && parsed.action !== "ignore") {
+    throw new Error(`Invalid action: ${parsed.action}`);
+  }
+  if (typeof parsed.confidence !== "number" || parsed.confidence < 0 || parsed.confidence > 1) {
+    throw new Error(`Invalid confidence: ${parsed.confidence}`);
+  }
+
+  return {
+    action: parsed.action,
+    confidence: parsed.confidence,
+    reply: parsed.reply ?? null,
+    reason: parsed.reason ?? "",
+  };
+}
+
 export async function analyzeComment(
   commentBody: string,
   apiKey: string,
@@ -32,9 +59,6 @@ export async function analyzeComment(
     throw new Error(`Gemini API error ${response.status}: ${err}`);
   }
 
-  const data: any = await response.json();
-  const text: string | undefined = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("No response from Gemini");
-
-  return JSON.parse(text) as AnalysisResult;
+  const data: unknown = await response.json();
+  return parseGeminiResponse(data);
 }

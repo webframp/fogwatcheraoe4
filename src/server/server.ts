@@ -9,7 +9,7 @@ import type {
   UiResponse,
 } from "@devvit/web/shared";
 import { analyzeComment } from "./gemini.ts";
-import { CONFIDENCE_THRESHOLD } from "./persona.ts";
+import { shouldSkipAuthor, shouldReply, shouldSkipPost } from "./logic.ts";
 
 const GEMINI_KEY_REDIS = "config:gemini_api_key";
 
@@ -96,7 +96,7 @@ async function onCommentCreate(
   }
 
   // Avoid replying to ourselves
-  if (author.name === context.appSlug || author.name === "fogwatcheraoe4") {
+  if (shouldSkipAuthor(author.name, context.appSlug)) {
     return {};
   }
 
@@ -133,11 +133,11 @@ async function onCommentCreate(
   );
 
   // Only reply if action is "reply" and confidence exceeds threshold
-  if (analysis.action === "reply" && analysis.confidence >= CONFIDENCE_THRESHOLD && analysis.reply) {
+  if (shouldReply(analysis)) {
     try {
       await reddit.submitComment({
         id: comment.id as `t1_${string}`,
-        text: analysis.reply,
+        text: analysis.reply!,
         runAs: "APP",
       });
       console.log(`Replied to comment ${comment.id}`);
@@ -156,11 +156,11 @@ async function onPostSubmit(
   const author = input.author;
 
   if (!post || !author) return {};
-  if (author.name === context.appSlug || author.name === "fogwatcheraoe4") return {};
+  if (shouldSkipAuthor(author.name, context.appSlug)) return {};
 
   // Only analyze text posts with content
   const text = `${post.title}\n${post.selftext}`.trim();
-  if (!post.selftext) return {};
+  if (shouldSkipPost(post.selftext)) return {};
 
   const dedupKey = `processed:${post.id}`;
   const already = await redis.get(dedupKey);
@@ -187,11 +187,11 @@ async function onPostSubmit(
     `Post ${post.id} by ${author.name}: action=${analysis.action} confidence=${analysis.confidence} reason=${analysis.reason}`,
   );
 
-  if (analysis.action === "reply" && analysis.confidence >= CONFIDENCE_THRESHOLD && analysis.reply) {
+  if (shouldReply(analysis)) {
     try {
       await reddit.submitComment({
         id: post.id as `t3_${string}`,
-        text: analysis.reply,
+        text: analysis.reply!,
         runAs: "APP",
       });
       console.log(`Replied to post ${post.id}`);
@@ -235,7 +235,7 @@ async function onMenuFogwatcherReply(
   try {
     await reddit.submitComment({
       id: commentId as `t1_${string}`,
-      text: analysis.reply,
+      text: analysis.reply!,
       runAs: "APP",
     });
     // Mark as replied so the auto-trigger doesn't double up

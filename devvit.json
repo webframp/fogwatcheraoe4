@@ -14,7 +14,8 @@
     }
   },
   "forms": {
-    "apiKeyForm": "/internal/form/set-api-key"
+    "apiKeyForm": "/internal/form/set-api-key",
+    "settingsForm": "/internal/form/settings"
   },
   "triggers": {
     "onCommentCreate": "/internal/on-comment-create",
@@ -24,10 +25,17 @@
     "items": [
       {
         "label": "Reply as FogWatcher",
-        "description": "Analyze this comment and reply in FogWatcher's voice",
-        "location": "comment",
+        "description": "Analyze and reply in FogWatcher's voice",
+        "location": ["comment", "post"],
         "forUserType": "moderator",
         "endpoint": "/internal/menu/fogwatcher-reply"
+      },
+      {
+        "label": "FogWatcher Dry Run",
+        "description": "See what FogWatcher would say without posting",
+        "location": ["comment", "post"],
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/fogwatcher-dry-run"
       },
       {
         "label": "Set FogWatcher API Key",
@@ -35,6 +43,13 @@
         "location": "subreddit",
         "forUserType": "moderator",
         "endpoint": "/internal/menu/set-api-key"
+      },
+      {
+        "label": "FogWatcher Settings",
+        "description": "Configure confidence threshold",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/settings"
       }
     ]
   },

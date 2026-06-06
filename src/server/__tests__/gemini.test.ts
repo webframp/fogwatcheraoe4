@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { parseGeminiResponse } from "../gemini.ts";
+import { parseGeminiResponse, parseRetryDelay } from "../gemini.ts";
 
 describe("parseGeminiResponse", () => {
   it("parses a valid reply response", () => {
@@ -166,5 +166,72 @@ describe("parseGeminiResponse", () => {
     assert.throws(
       () => parseGeminiResponse(data),
     );
+  });
+
+  it("handles markdown-fenced JSON response", () => {
+    const json = JSON.stringify({ action: "reply", confidence: 0.8, reply: "GGs only.", reason: "test" });
+    const data = {
+      candidates: [{
+        content: { parts: [{ text: "```json\n" + json + "\n```" }] },
+      }],
+    };
+    const result = parseGeminiResponse(data);
+    assert.strictEqual(result.action, "reply");
+    assert.strictEqual(result.confidence, 0.8);
+  });
+
+  it("handles bare markdown fences without language tag", () => {
+    const json = JSON.stringify({ action: "ignore", confidence: 0.3, reply: null, reason: "fine" });
+    const data = {
+      candidates: [{
+        content: { parts: [{ text: "```\n" + json + "\n```" }] },
+      }],
+    };
+    const result = parseGeminiResponse(data);
+    assert.strictEqual(result.action, "ignore");
+  });
+});
+
+describe("parseRetryDelay", () => {
+  it("extracts delay from a standard 429 response body", () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        details: [
+          { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "51s" },
+        ],
+      },
+    });
+    assert.strictEqual(parseRetryDelay(body), 51);
+  });
+
+  it("extracts delay with decimal seconds", () => {
+    const body = JSON.stringify({
+      error: {
+        code: 429,
+        details: [
+          { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "10.269942469s" },
+        ],
+      },
+    });
+    assert.strictEqual(parseRetryDelay(body), 10);
+  });
+
+  it("returns null for missing details", () => {
+    const body = JSON.stringify({ error: { code: 429 } });
+    assert.strictEqual(parseRetryDelay(body), null);
+  });
+
+  it("returns null for non-JSON input", () => {
+    assert.strictEqual(parseRetryDelay("not json"), null);
+  });
+
+  it("returns null when no RetryInfo in details", () => {
+    const body = JSON.stringify({
+      error: {
+        details: [{ "@type": "type.googleapis.com/google.rpc.Help" }],
+      },
+    });
+    assert.strictEqual(parseRetryDelay(body), null);
   });
 });

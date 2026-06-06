@@ -8,13 +8,52 @@ import type {
   TriggerResponse,
   UiResponse,
 } from "@devvit/web/shared";
-import { analyzeComment } from "./gemini.ts";
-import { shouldSkipAuthor, shouldReply, shouldSkipPost } from "./logic.ts";
+import { analyzeComment, analyzeWithRetry } from "./gemini.ts";
+import { shouldSkipAuthor, shouldReply, shouldSkipPost, isWhitelisted, RATE_LIMIT_KEY, RATE_LIMIT_MAX, RATE_LIMIT_TTL, ESCALATION_THRESHOLD } from "./logic.ts";
 
 const GEMINI_KEY_REDIS = "config:gemini_api_key";
 
 async function getApiKey(): Promise<string | undefined> {
   return (await redis.get(GEMINI_KEY_REDIS)) ?? undefined;
+}
+
+async function getThreshold(): Promise<number> {
+  const val = await redis.get("config:confidence_threshold");
+  if (val) {
+    const n = parseFloat(val);
+    if (isFinite(n) && n >= 0 && n <= 1) return n;
+  }
+  return 0.7; // default
+}
+
+async function getWhitelist(): Promise<Set<string>> {
+  const cached = await redis.get("cache:whitelist");
+  if (cached) {
+    try {
+      return new Set(JSON.parse(cached) as string[]);
+    } catch {}
+  }
+
+  // Refresh from Reddit API
+  const subreddit = context.subredditName;
+  const names: string[] = [];
+  try {
+    const mods = await reddit.getModerators({ subredditName: subreddit }).all();
+    for (const mod of mods) names.push(mod.username.toLowerCase());
+  } catch (err) {
+    console.error(`Failed to fetch mods: ${err}`);
+  }
+  try {
+    const approved = await reddit.getApprovedUsers({ subredditName: subreddit }).all();
+    for (const user of approved) names.push(user.username.toLowerCase());
+  } catch (err) {
+    console.error(`Failed to fetch approved users: ${err}`);
+  }
+
+  // Cache for 10 minutes
+  await redis.set("cache:whitelist", JSON.stringify(names));
+  await redis.expire("cache:whitelist", 600);
+  return new Set(names);
 }
 
 export async function serverOnRequest(
@@ -57,6 +96,13 @@ async function onRequest(
     return;
   }
 
+  if (url === "/internal/menu/fogwatcher-dry-run") {
+    const body = await readJSON<MenuItemRequest>(req);
+    const result = await onMenuFogwatcherDryRun(body);
+    writeJSON(200, result, rsp);
+    return;
+  }
+
   if (url === "/internal/menu/set-api-key") {
     console.log("set-api-key menu hit");
     await readJSON<MenuItemRequest>(req);
@@ -81,6 +127,37 @@ async function onRequest(
     return;
   }
 
+  if (url === "/internal/menu/settings") {
+    const current = await redis.get("config:confidence_threshold");
+    const result: UiResponse = {
+      showForm: {
+        name: "settingsForm",
+        form: {
+          title: "FogWatcher Settings",
+          fields: [
+            { type: "string", name: "threshold", label: "Confidence threshold (0.0–1.0)", required: true },
+          ],
+          acceptLabel: "Save",
+        },
+        data: { threshold: current ?? "0.7" },
+      },
+    };
+    writeJSON(200, result, rsp);
+    return;
+  }
+
+  if (url === "/internal/form/settings") {
+    const body = await readJSON<{ threshold: string }>(req);
+    const n = parseFloat(body.threshold);
+    if (!isFinite(n) || n < 0 || n > 1) {
+      writeJSON(200, { showToast: { text: "Threshold must be between 0.0 and 1.0", appearance: "neutral" } }, rsp);
+      return;
+    }
+    await redis.set("config:confidence_threshold", String(n));
+    writeJSON(200, { showToast: { text: `Threshold set to ${n}`, appearance: "success" } }, rsp);
+    return;
+  }
+
   writeJSON(404, { error: "not found" }, rsp);
 }
 
@@ -100,6 +177,13 @@ async function onCommentCreate(
     return {};
   }
 
+  // Skip whitelisted users (mods + approved users)
+  const whitelist = await getWhitelist();
+  if (isWhitelisted(author.name, whitelist)) {
+    console.log(`Skipping whitelisted user ${author.name} on comment ${comment.id}`);
+    return {};
+  }
+
   // Dedup: check if we already processed this comment
   const dedupKey = `processed:${comment.id}`;
   const already = await redis.get(dedupKey);
@@ -114,6 +198,7 @@ async function onCommentCreate(
     console.error("No Gemini API key configured. Run: npx devvit settings set gemini_api_key");
     return {};
   }
+  const threshold = await getThreshold();
 
   // Analyze comment
   let analysis;
@@ -133,14 +218,36 @@ async function onCommentCreate(
   );
 
   // Only reply if action is "reply" and confidence exceeds threshold
-  if (shouldReply(analysis)) {
+  if (shouldReply(analysis, threshold)) {
+    // Rate limit check
+    const count = parseInt((await redis.get(RATE_LIMIT_KEY)) ?? "0", 10);
+    if (count >= RATE_LIMIT_MAX) {
+      console.log(`Rate limited. Would have replied to comment ${comment.id}: ${analysis.reply}`);
+      return {};
+    }
+
     try {
       await reddit.submitComment({
         id: comment.id as `t1_${string}`,
         text: analysis.reply!,
         runAs: "APP",
       });
+      await redis.incrBy(RATE_LIMIT_KEY, 1);
+      const ttl = await redis.expireTime(RATE_LIMIT_KEY);
+      if (ttl <= 0) await redis.expire(RATE_LIMIT_KEY, RATE_LIMIT_TTL);
       console.log(`Replied to comment ${comment.id}`);
+      await redis.incrBy("stats:total_replies", 1);
+
+      // Escalate to modqueue for high-confidence flags
+      if (analysis.confidence >= ESCALATION_THRESHOLD) {
+        try {
+          const commentObj = await reddit.getCommentById(comment.id as `t1_${string}`);
+          await reddit.report(commentObj, { reason: `FogWatcher: ${analysis.reason} (${analysis.confidence.toFixed(2)})` });
+          console.log(`Reported comment ${comment.id} to modqueue`);
+        } catch (reportErr) {
+          console.error(`Failed to report ${comment.id}: ${reportErr}`);
+        }
+      }
     } catch (err) {
       console.error(`Failed to reply to ${comment.id}: ${err}`);
     }
@@ -158,6 +265,13 @@ async function onPostSubmit(
   if (!post || !author) return {};
   if (shouldSkipAuthor(author.name, context.appSlug)) return {};
 
+  // Skip whitelisted users
+  const whitelist = await getWhitelist();
+  if (isWhitelisted(author.name, whitelist)) {
+    console.log(`Skipping whitelisted user ${author.name} on post ${post.id}`);
+    return {};
+  }
+
   // Only analyze text posts with content
   const text = `${post.title}\n${post.selftext}`.trim();
   if (shouldSkipPost(post.selftext)) return {};
@@ -171,6 +285,7 @@ async function onPostSubmit(
     console.error("No Gemini API key configured.");
     return {};
   }
+  const threshold = await getThreshold();
 
   let analysis;
   try {
@@ -187,14 +302,35 @@ async function onPostSubmit(
     `Post ${post.id} by ${author.name}: action=${analysis.action} confidence=${analysis.confidence} reason=${analysis.reason}`,
   );
 
-  if (shouldReply(analysis)) {
+  if (shouldReply(analysis, threshold)) {
+    const count = parseInt((await redis.get(RATE_LIMIT_KEY)) ?? "0", 10);
+    if (count >= RATE_LIMIT_MAX) {
+      console.log(`Rate limited. Would have replied to post ${post.id}: ${analysis.reply}`);
+      return {};
+    }
+
     try {
       await reddit.submitComment({
         id: post.id as `t3_${string}`,
         text: analysis.reply!,
         runAs: "APP",
       });
+      await redis.incrBy(RATE_LIMIT_KEY, 1);
+      const ttl = await redis.expireTime(RATE_LIMIT_KEY);
+      if (ttl <= 0) await redis.expire(RATE_LIMIT_KEY, RATE_LIMIT_TTL);
       console.log(`Replied to post ${post.id}`);
+      await redis.incrBy("stats:total_replies", 1);
+
+      // Escalate to modqueue for high-confidence flags
+      if (analysis.confidence >= ESCALATION_THRESHOLD) {
+        try {
+          const postObj = await reddit.getPostById(post.id as `t3_${string}`);
+          await reddit.report(postObj, { reason: `FogWatcher: ${analysis.reason} (${analysis.confidence.toFixed(2)})` });
+          console.log(`Reported post ${post.id} to modqueue`);
+        } catch (reportErr) {
+          console.error(`Failed to report post ${post.id}: ${reportErr}`);
+        }
+      }
     } catch (err) {
       console.error(`Failed to reply to post ${post.id}: ${err}`);
     }
@@ -206,7 +342,7 @@ async function onPostSubmit(
 async function onMenuFogwatcherReply(
   input: MenuItemRequest,
 ): Promise<UiResponse> {
-  const commentId = input.targetId;
+  const targetId = input.targetId;
 
   // Get API key
   const apiKey = await getApiKey();
@@ -214,38 +350,85 @@ async function onMenuFogwatcherReply(
     return { showToast: { text: "No API key. Use 'Set FogWatcher API Key' menu first.", appearance: "neutral" } };
   }
 
-  // Fetch the comment to get its body
-  const comment = await reddit.getCommentById(commentId as `t1_${string}`);
-  if (!comment) {
-    return { showToast: { text: "Could not fetch comment.", appearance: "neutral" } };
+  // Fetch content based on thing type
+  let contentBody: string;
+  if (targetId.startsWith("t1_")) {
+    const comment = await reddit.getCommentById(targetId as `t1_${string}`);
+    if (!comment) return { showToast: { text: "Could not fetch comment.", appearance: "neutral" } };
+    contentBody = comment.body;
+  } else if (targetId.startsWith("t3_")) {
+    const post = await reddit.getPostById(targetId as `t3_${string}`);
+    if (!post) return { showToast: { text: "Could not fetch post.", appearance: "neutral" } };
+    contentBody = `${post.title}\n${post.body ?? ""}`.trim();
+  } else {
+    return { showToast: { text: `Unsupported target: ${targetId}`, appearance: "neutral" } };
   }
 
-  // Analyze
+  // Analyze with retry on 429
   let analysis;
   try {
-    analysis = await analyzeComment(comment.body, apiKey);
+    analysis = await analyzeWithRetry(contentBody, apiKey);
   } catch (err) {
     return { showToast: { text: `Analysis failed: ${err}`, appearance: "neutral" } };
   }
 
   if (analysis.action === "ignore" || !analysis.reply) {
-    return { showToast: { text: "Comment looks fine. No reply needed.", appearance: "neutral" } };
+    return { showToast: { text: "Content looks fine. No reply needed.", appearance: "neutral" } };
   }
 
   try {
     await reddit.submitComment({
-      id: commentId as `t1_${string}`,
+      id: targetId as `t1_${string}` | `t3_${string}`,
       text: analysis.reply!,
       runAs: "APP",
     });
-    // Mark as replied so the auto-trigger doesn't double up
-    await redis.set(`processed:${commentId}`, "1");
-    await redis.expire(`processed:${commentId}`, 86400);
+    await redis.set(`processed:${targetId}`, "1");
+    await redis.expire(`processed:${targetId}`, 86400);
   } catch (err) {
     return { showToast: { text: `Failed to reply: ${err}`, appearance: "neutral" } };
   }
 
   return { showToast: { text: "FogWatcher has spoken.", appearance: "success" } };
+}
+
+async function onMenuFogwatcherDryRun(
+  input: MenuItemRequest,
+): Promise<UiResponse> {
+  const targetId = input.targetId;
+
+  const apiKey = await getApiKey();
+  if (!apiKey) {
+    return { showToast: { text: "No API key. Use 'Set FogWatcher API Key' menu first.", appearance: "neutral" } };
+  }
+
+  // Fetch content
+  let contentBody: string;
+  if (targetId.startsWith("t1_")) {
+    const comment = await reddit.getCommentById(targetId as `t1_${string}`);
+    if (!comment) return { showToast: { text: "Could not fetch comment.", appearance: "neutral" } };
+    contentBody = comment.body;
+  } else if (targetId.startsWith("t3_")) {
+    const post = await reddit.getPostById(targetId as `t3_${string}`);
+    if (!post) return { showToast: { text: "Could not fetch post.", appearance: "neutral" } };
+    contentBody = `${post.title}\n${post.body ?? ""}`.trim();
+  } else {
+    return { showToast: { text: `Unsupported target: ${targetId}`, appearance: "neutral" } };
+  }
+
+  let analysis;
+  try {
+    analysis = await analyzeWithRetry(contentBody, apiKey);
+  } catch (err) {
+    return { showToast: { text: `Analysis failed: ${err}`, appearance: "neutral" } };
+  }
+
+  // Show the result as a toast — never post
+  if (analysis.action === "ignore" || !analysis.reply) {
+    return { showToast: { text: `[DRY RUN] Would ignore (${analysis.confidence.toFixed(2)}): ${analysis.reason}`, appearance: "neutral" } };
+  }
+
+  console.log(`[DRY RUN] ${targetId}: Would reply (${analysis.confidence.toFixed(2)}): ${analysis.reply}`);
+  return { showToast: { text: `[DRY RUN] Would reply (${analysis.confidence.toFixed(2)}): ${analysis.reply!.slice(0, 100)}`, appearance: "success" } };
 }
 
 function writeJSON(status: number, json: unknown, rsp: ServerResponse): void {

@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { shouldSkipAuthor, shouldReply, shouldSkipPost } from "../logic.ts";
+import { shouldSkipAuthor, shouldReply, shouldSkipPost, isWhitelisted } from "../logic.ts";
 import type { AnalysisResult } from "../gemini.ts";
 
 describe("shouldSkipAuthor", () => {
@@ -113,5 +113,61 @@ describe("shouldSkipPost", () => {
   it("does not skip when selftext is whitespace only", () => {
     // Whitespace-only still passes — the analysis handles whether it's meaningful
     assert.strictEqual(shouldSkipPost("   "), false);
+  });
+});
+
+describe("isWhitelisted", () => {
+  const whitelist = new Set(["moduser", "approvedbot", "adminname"]);
+
+  it("returns true for a whitelisted username (exact match)", () => {
+    assert.strictEqual(isWhitelisted("moduser", whitelist), true);
+  });
+
+  it("is case-insensitive", () => {
+    assert.strictEqual(isWhitelisted("ModUser", whitelist), true);
+    assert.strictEqual(isWhitelisted("APPROVEDBOT", whitelist), true);
+  });
+
+  it("returns false for non-whitelisted users", () => {
+    assert.strictEqual(isWhitelisted("random_user", whitelist), false);
+  });
+
+  it("returns false for empty whitelist", () => {
+    assert.strictEqual(isWhitelisted("anyone", new Set()), false);
+  });
+});
+
+describe("shouldReply with custom threshold", () => {
+  it("uses custom threshold when provided", () => {
+    const analysis: AnalysisResult = {
+      action: "reply",
+      confidence: 0.5,
+      reply: "text",
+      reason: "test",
+    };
+    // At default 0.7, this would fail
+    assert.strictEqual(shouldReply(analysis), false);
+    // At custom 0.4, this passes
+    assert.strictEqual(shouldReply(analysis, 0.4), true);
+  });
+
+  it("custom threshold of 1.0 blocks everything below 1.0", () => {
+    const analysis: AnalysisResult = {
+      action: "reply",
+      confidence: 0.99,
+      reply: "text",
+      reason: "test",
+    };
+    assert.strictEqual(shouldReply(analysis, 1.0), false);
+  });
+
+  it("custom threshold of 0 allows any confidence", () => {
+    const analysis: AnalysisResult = {
+      action: "reply",
+      confidence: 0.01,
+      reply: "text",
+      reason: "test",
+    };
+    assert.strictEqual(shouldReply(analysis, 0), true);
   });
 });

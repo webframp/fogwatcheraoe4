@@ -1,0 +1,48 @@
+{
+  "$schema": "https://developers.reddit.com/schema/config-file.v1.json",
+  "name": "fogwatcheraoe4",
+  "server": {
+    "dir": "dist/server",
+    "entry": "index.js"
+  },
+  "permissions": {
+    "reddit": true,
+    "redis": true,
+    "http": {
+      "enable": true,
+      "domains": ["generativelanguage.googleapis.com"]
+    }
+  },
+  "forms": {
+    "apiKeyForm": "/internal/form/set-api-key"
+  },
+  "triggers": {
+    "onCommentCreate": "/internal/on-comment-create",
+    "onPostSubmit": "/internal/on-post-submit"
+  },
+  "menu": {
+    "items": [
+      {
+        "label": "Reply as FogWatcher",
+        "description": "Analyze this comment and reply in FogWatcher's voice",
+        "location": "comment",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/fogwatcher-reply"
+      },
+      {
+        "label": "Set FogWatcher API Key",
+        "description": "Configure the Gemini API key",
+        "location": "subreddit",
+        "forUserType": "moderator",
+        "endpoint": "/internal/menu/set-api-key"
+      }
+    ]
+  },
+  "marketingAssets": {
+    "icon": "assets/icon.png"
+  },
+  "scripts": {
+    "dev": "node --experimental-strip-types ./tools/build.ts --watch",
+    "build": "node --experimental-strip-types ./tools/build.ts --minify"
+  }
+}

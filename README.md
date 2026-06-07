@@ -54,5 +54,16 @@ Alternatively, you can set it via the app's mod menu after installation.
 
 - `npm run dev`: Starts playtest with watch mode
 - `npm run build`: Builds the server bundle
-- `npm run deploy`: Builds and uploads to Reddit
+- `npm run deploy`: Builds and uploads to Reddit (manual, prefer release workflow)
+- `npm test`: Run unit tests (41 tests)
 - `npx devvit logs r/SUBREDDIT --since=5m`: Stream logs
+
+## Deployment
+
+Deployment is automated via GitHub Actions. Create a release to deploy:
+
+```bash
+gh release create v0.X.0 --title "v0.X.0" --notes "Description"
+```
+
+PRs to main require the `test` check to pass. Main branch is protected against direct push and force push.- `npx devvit logs r/SUBREDDIT --since=5m`: Stream logs

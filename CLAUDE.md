@@ -67,6 +67,42 @@ The persona config in `persona.ts` controls what gets flagged and how FogWatcher
 - `persona.ts` — All character/prompt configuration. Change personality without touching server logic.
 - `server.ts` — Routing and orchestration. Knows about Reddit and Redis but delegates analysis.
 
+
+## Pre-PR Review Gates
+
+Run these locally before opening a PR:
+
+```bash
+npm run review              # Type-check + tests + review checklist
+npm run review:adversarial  # Deep analysis of core logic changes
+npm run review:security     # CI workflow security audit
+```
+
+The `review` script is the mandatory gate — it runs type-check and tests, then
+prints the applicable review dimensions for the agent to verify against the
+diff. The adversarial and security scripts only produce output when relevant
+files are changed.
+
+Review constraint definitions live in `agent-constraints/`:
+- `code-review.md` — conventions, test coverage, type safety, domain language
+- `adversarial-dimensions.md` — logic, error handling, security, data integrity
+- `ci-security.md` — secret exposure, permissions, action pinning, injection
+
+**RULE: All review gates MUST pass clean before opening any PR.** No exceptions.
+Do not open a PR with failing type-checks, failing tests, or unaddressed
+blocking findings from the review dimensions.
+
+### How to use
+
+1. Run `npm run review`. If type-check or tests fail, fix them first.
+2. Read the printed review checklist. Verify each item against your diff.
+3. If core logic files changed, run `npm run review:adversarial`. Read the
+   diff output and check each adversarial dimension. Fix any CRITICAL or HIGH
+   findings before proceeding.
+4. If workflow files changed, run `npm run review:security`. Address any
+   findings.
+5. Only after all gates pass clean with no blocking findings: open the PR.
+
 ## Testing Without Burning Quota
 
 - Use `r/fogwatcheraoe4_dev` as the playtest subreddit

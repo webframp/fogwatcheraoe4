@@ -29,4 +29,6 @@ jobs:
           echo '${{ secrets.DEVVIT_TOKEN }}' > ~/.devvit/token
 
       - name: Deploy to Reddit
-        run: npx devvit upload
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          npx devvit upload --version "$VERSION"

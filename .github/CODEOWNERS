@@ -1,0 +1,4 @@
+# Require webframp approval for CI/CD and security-sensitive files
+.github/workflows/ @webframp
+.github/CODEOWNERS @webframp
+agent-constraints/ @webframp

@@ -149,7 +149,7 @@ async function onRequest(
                 { label: "Disabled", value: "disabled" },
               ],
             },
-            { type: "string", name: "threshold", label: "Confidence threshold (0.0–1.0)", required: true },
+            { type: "string", name: "threshold", label: "Confidence threshold (0.0–1.0)", helpText: "Default: 0.7 if left empty" },
           ],
           acceptLabel: "Save",
         },
@@ -177,15 +177,19 @@ async function onRequest(
     }
 
     // Handle threshold
-    const n = parseFloat(body.threshold);
-    if (!isFinite(n) || n < 0 || n > 1) {
-      writeJSON(200, { showToast: { text: "Threshold must be between 0.0 and 1.0", appearance: "neutral" } }, rsp);
-      return;
+    const thresholdStr = body.threshold?.trim();
+    if (thresholdStr) {
+      const n = parseFloat(thresholdStr);
+      if (!isFinite(n) || n < 0 || n > 1) {
+        writeJSON(200, { showToast: { text: "Threshold must be between 0.0 and 1.0", appearance: "neutral" } }, rsp);
+        return;
+      }
+      await redis.set("config:confidence_threshold", String(n));
     }
-    await redis.set("config:confidence_threshold", String(n));
 
     const statusMsg = status === "active" ? "Active" : status === "disabled" ? "Disabled" : `Paused (${status.replace("pause_", "")})`;
-    writeJSON(200, { showToast: { text: `Settings saved. Status: ${statusMsg}, Threshold: ${n}`, appearance: "success" } }, rsp);
+    const currentThreshold = await redis.get("config:confidence_threshold") ?? "0.7";
+    writeJSON(200, { showToast: { text: `Settings saved. Status: ${statusMsg}, Threshold: ${currentThreshold}`, appearance: "success" } }, rsp);
     return;
   }
 

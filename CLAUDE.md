@@ -83,3 +83,38 @@ The persona config in `persona.ts` controls what gets flagged and how FogWatcher
 - Redis is namespaced per installation (per-subreddit)
 - `isSecret: true` on form fields only works with `SettingScope.App`, not regular forms
 - `npm run deploy` auto-bumps version in `package.json`
+
+## Development Workflow
+
+- **Main branch is protected**: no direct pushes, no force push. All changes via PR.
+- **PRs require**: the `test` status check to pass (type-check + 41 unit tests + build).
+- **Deploy happens on release only**, not on merge to main.
+
+### Release Process
+
+```bash
+# 1. Create a PR, get tests passing, merge to main
+# 2. Create a release to trigger deploy:
+gh release create v0.X.0 --title "v0.X.0" --notes "Description of changes"
+```
+
+This triggers the `deploy.yml` workflow which runs tests and then `devvit upload`.
+
+### Local Development
+
+```bash
+npm test                        # Run unit tests
+npx tsc --build                 # Type check
+npm run build                   # Build bundle
+npm run deploy                  # Manual deploy (bypasses CI)
+npx devvit logs r/SUB --since=5m  # Stream logs
+```
+
+### Refreshing CI Auth
+
+The `DEVVIT_TOKEN` GitHub secret contains the Devvit login token. When it expires:
+
+```bash
+npx devvit login
+gh secret set DEVVIT_TOKEN < ~/.devvit/token
+```

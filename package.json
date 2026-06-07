@@ -9,6 +9,9 @@
     "deploy": "npm run build && devvit upload",
     "dev": "devvit playtest",
     "test": "node --experimental-strip-types --test src/server/__tests__/*.test.ts",
+    "review": "node --experimental-strip-types scripts/review-code.ts",
+    "review:adversarial": "node --experimental-strip-types scripts/review-adversarial.ts",
+    "review:security": "node --experimental-strip-types scripts/review-ci-security.ts",
     "login": "devvit login",
     "launch": "npm run build && npm run deploy && devvit publish",
     "type-check": "tsc --build"

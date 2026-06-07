@@ -128,18 +128,32 @@ async function onRequest(
   }
 
   if (url === "/internal/menu/settings") {
-    const current = await redis.get("config:confidence_threshold");
+    const currentThreshold = await redis.get("config:confidence_threshold");
+    const enabled = await redis.get("config:enabled");
+    const currentStatus = enabled === "0" ? "disabled" : "active";
     const result: UiResponse = {
       showForm: {
         name: "settingsForm",
         form: {
           title: "FogWatcher Settings",
           fields: [
+            {
+              type: "select",
+              name: "status",
+              label: "Status",
+              options: [
+                { label: "Active", value: "active" },
+                { label: "Pause 1 hour", value: "pause_1h" },
+                { label: "Pause 6 hours", value: "pause_6h" },
+                { label: "Pause 24 hours", value: "pause_24h" },
+                { label: "Disabled", value: "disabled" },
+              ],
+            },
             { type: "string", name: "threshold", label: "Confidence threshold (0.0–1.0)", required: true },
           ],
           acceptLabel: "Save",
         },
-        data: { threshold: current ?? "0.7" },
+        data: { status: [currentStatus], threshold: currentThreshold ?? "0.7" },
       },
     };
     writeJSON(200, result, rsp);
@@ -147,14 +161,31 @@ async function onRequest(
   }
 
   if (url === "/internal/form/settings") {
-    const body = await readJSON<{ threshold: string }>(req);
+    const body = await readJSON<{ threshold: string; status: string[] }>(req);
+
+    // Handle status
+    const status = body.status?.[0] ?? "active";
+    if (status === "active") {
+      await redis.del("config:enabled");
+    } else if (status === "disabled") {
+      await redis.set("config:enabled", "0");
+    } else {
+      const hours: Record<string, number> = { pause_1h: 1, pause_6h: 6, pause_24h: 24 };
+      const ttl = (hours[status] ?? 1) * 3600;
+      await redis.set("config:enabled", "0");
+      await redis.expire("config:enabled", ttl);
+    }
+
+    // Handle threshold
     const n = parseFloat(body.threshold);
     if (!isFinite(n) || n < 0 || n > 1) {
       writeJSON(200, { showToast: { text: "Threshold must be between 0.0 and 1.0", appearance: "neutral" } }, rsp);
       return;
     }
     await redis.set("config:confidence_threshold", String(n));
-    writeJSON(200, { showToast: { text: `Threshold set to ${n}`, appearance: "success" } }, rsp);
+
+    const statusMsg = status === "active" ? "Active" : status === "disabled" ? "Disabled" : `Paused (${status.replace("pause_", "")})`;
+    writeJSON(200, { showToast: { text: `Settings saved. Status: ${statusMsg}, Threshold: ${n}`, appearance: "success" } }, rsp);
     return;
   }
 
@@ -164,6 +195,10 @@ async function onRequest(
 async function onCommentCreate(
   input: OnCommentCreateRequest,
 ): Promise<TriggerResponse> {
+  // Check if bot is paused/disabled
+  const enabled = await redis.get("config:enabled");
+  if (enabled === "0") return {};
+
   const comment = input.comment;
   const author = input.author;
 
@@ -259,6 +294,10 @@ async function onCommentCreate(
 async function onPostSubmit(
   input: OnPostSubmitRequest,
 ): Promise<TriggerResponse> {
+  // Check if bot is paused/disabled
+  const enabled = await redis.get("config:enabled");
+  if (enabled === "0") return {};
+
   const post = input.post;
   const author = input.author;
 
